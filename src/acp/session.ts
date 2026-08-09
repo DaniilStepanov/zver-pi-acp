@@ -37,7 +37,7 @@ type SessionCreateParams = {
   piCommand?: string
 }
 
-export type StopReason = 'end_turn' | 'cancelled' | 'error'
+export type StopReason = 'end_turn' | 'cancelled'
 
 type PendingTurn = {
   resolve: (reason: StopReason) => void
@@ -401,10 +401,6 @@ export class PiAcpSession {
     await this.proc.abort()
   }
 
-  wasCancelRequested(): boolean {
-    return this.cancelRequested
-  }
-
   private emit(update: SessionUpdate): void {
     // An unstamped assistant chunk is an adapter-authored notice (retry,
     // compaction, queue, ...). It interrupts whatever the model was saying, so
@@ -499,7 +495,8 @@ export class PiAcpSession {
     // id open; the new turn's output must not join that message.
     this.messageIds.end()
 
-    this.pendingTurn = { resolve: t.resolve, reject: t.reject }
+    const pendingTurn = { resolve: t.resolve, reject: t.reject }
+    this.pendingTurn = pendingTurn
 
     // Publish queue depth (0 because we're starting the turn now).
     this.emit({
@@ -514,26 +511,28 @@ export class PiAcpSession {
       // If the subprocess errors before we get `agent_settled`, treat as error unless cancelled.
       // Also ensure we flush any already-enqueued updates first.
       void this.flushEmits().finally(() => {
-        // If this looks like an auth/config issue, surface AUTH_REQUIRED so clients can offer terminal login.
-        const authErr = maybeAuthRequiredError(err)
-        if (authErr) {
-          this.pendingTurn?.reject(authErr)
-        } else {
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
-          this.pendingTurn?.resolve(reason)
-        }
+        // A late ACK failure must not finish a newer turn that already owns pendingTurn.
+        if (this.pendingTurn !== pendingTurn) return
+
+        const error = maybeAuthRequiredError(err) ?? err
+        if (this.cancelRequested) pendingTurn.resolve('cancelled')
+        else pendingTurn.reject(error)
 
         this.pendingTurn = null
         this.inAgentLoop = false
 
-        // If the prompt failed, do not automatically proceed—pi may be unhealthy.
-        // But we still clear the queueDepth metadata.
+        // A failed ACK leaves pi unhealthy, so queued prompts cannot safely be started.
+        const queued = this.turnQueue.splice(0)
+        for (const turn of queued) {
+          if (this.cancelRequested) turn.resolve('cancelled')
+          else turn.reject(error)
+        }
+
         this.emit({
           sessionUpdate: 'session_info_update',
-          _meta: { piAcp: { queueDepth: this.turnQueue.length, running: false } }
+          _meta: { piAcp: { queueDepth: 0, running: false } }
         })
       })
-      void err
     })
   }
 
@@ -883,15 +882,22 @@ export class PiAcpSession {
       }
 
       case 'agent_settled': {
+        const pendingTurn = this.pendingTurn
+        if (!pendingTurn) break
+
         // Ensure all updates derived from pi events are delivered before we resolve
         // the ACP `session/prompt` request.
         void this.flushEmits().finally(() => {
+          // Ignore duplicate/late settling events after ownership moved to another turn.
+          if (this.pendingTurn !== pendingTurn) return
+
           if (this.cancelRequested) {
-            this.pendingTurn?.resolve('cancelled')
+            pendingTurn.resolve('cancelled')
           } else if (this.retryFailureMessage) {
-            this.pendingTurn?.reject(RequestError.internalError({}, this.retryFailureMessage))
+            // Exhausted retries must not look like a successful turn.
+            pendingTurn.reject(RequestError.internalError({}, this.retryFailureMessage))
           } else {
-            this.pendingTurn?.resolve('end_turn')
+            pendingTurn.resolve('end_turn')
           }
           this.pendingTurn = null
           this.inAgentLoop = false

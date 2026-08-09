@@ -19,7 +19,6 @@ import {
   type SetSessionConfigOptionResponse,
   type SetSessionModeRequest,
   type SetSessionModeResponse,
-  type StopReason,
   type DeleteSessionRequest,
   type DeleteSessionResponse
 } from '@agentclientprotocol/sdk'
@@ -898,12 +897,21 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    const result = await session.prompt(message, images)
+    let result: StopReason
+    try {
+      result = await session.prompt(message, images)
+    } catch (error) {
+      // A rejected turn means the session is unhealthy (dead child, stalled
+      // acknowledgement): drop it so a later request restores it from disk.
+      this.sessions.close(session.sessionId)
+      throw error
+    }
 
     // ACP StopReason has no "error"; failures must surface as JSON-RPC errors,
     // not a silent empty end_turn (#82).
     if (result === 'error') {
       if (session.wasCancelRequested()) return { stopReason: 'cancelled' }
+      this.sessions.close(session.sessionId)
       throw RequestError.internalError({}, 'pi prompt failed (the pi process may have exited)')
     }
 
