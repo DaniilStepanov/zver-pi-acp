@@ -1,21 +1,17 @@
 {
-  "name": "pi-acp",
+  "name": "@zver/pi-acp",
   "version": "0.0.33",
-  "description": "ACP adapter for pi coding agent",
+  "description": "ACP adapter for pi coding agent (fork of pi-acp)",
   "license": "MIT",
   "author": "Sergii Kozak <svkozak@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/svkozak/pi-acp.git"
-  },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "url": "https://github.com/DaniilStepanov/zver-pi-acp.git"
   },
   "bugs": {
-    "url": "https://github.com/svkozak/pi-acp/issues"
+    "url": "https://github.com/DaniilStepanov/zver-pi-acp/issues"
   },
-  "homepage": "https://github.com/svkozak/pi-acp#readme",
+  "homepage": "https://github.com/DaniilStepanov/zver-pi-acp#readme",
   "keywords": [
     "acp",
     "agent-client-protocol",
@@ -28,7 +24,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "pi-acp": "dist/index.js"
+    "zver-pi-acp": "dist/index.js"
   },
   "files": [
     "dist"
@@ -43,6 +39,7 @@
     "test": "node --import tsx --test test/**/*.test.ts",
     "smoke": "node scripts/smoke-acp.mjs",
     "prepack": "npm run build",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run test && npm run build"
   },
   "dependencies": {
