@@ -382,7 +382,7 @@ test('PiAcpSession: emits agent_message_chunk for auto_retry_end', async () => {
     fileCommands: []
   })
 
-  proc.emit({ type: 'auto_retry_end' } as any)
+  proc.emit({ type: 'auto_retry_end', success: true, attempt: 2 } as any)
 
   await new Promise(r => setTimeout(r, 0))
 
@@ -391,6 +391,42 @@ test('PiAcpSession: emits agent_message_chunk for auto_retry_end', async () => {
     sessionUpdate: 'agent_message_chunk',
     content: { type: 'text', text: 'Retry finished, resuming.' }
   })
+})
+
+test('PiAcpSession: rejects the prompt when automatic retries are exhausted', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const prompt = session.prompt('hello')
+  proc.emit({ type: 'agent_start' })
+  proc.emit({
+    type: 'auto_retry_end',
+    success: false,
+    attempt: 3,
+    finalError: 'Codex error: Our servers are currently overloaded. Please try again later.'
+  } as any)
+  proc.emit({ type: 'agent_end', willRetry: false })
+  proc.emit({ type: 'agent_settled' })
+
+  await assert.rejects(prompt, /automatic retries exhausted after 3 attempts/i)
+
+  const messages = conn.updates
+    .filter(update => update.update.sessionUpdate === 'agent_message_chunk')
+    .map(update => (update.update as any).content.text)
+  assert.deepEqual(messages, ['Automatic retries exhausted after 3 attempts.'])
+  assert.equal(
+    messages.some(message => message.includes('servers are currently overloaded')),
+    false
+  )
 })
 
 test('PiAcpSession: emits agent_message_chunk for auto_compaction_start', async () => {

@@ -274,6 +274,7 @@ export class PiAcpSession {
   // Current in-flight turn (if any). Additional prompts are queued.
   private pendingTurn: PendingTurn | null = null
   private readonly turnQueue: QueuedTurn[] = []
+  private retryFailureMessage: string | null = null
   // Track tool call statuses and ensure they are monotonic (pending -> in_progress -> completed).
   // Some pi events can arrive out of order (e.g. late toolcall_* deltas after execution starts),
   // and clients may hide progress if we ever downgrade back to `pending`.
@@ -474,6 +475,7 @@ export class PiAcpSession {
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
     this.inAgentLoop = false
+    this.retryFailureMessage = null
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
 
@@ -781,6 +783,7 @@ export class PiAcpSession {
       }
 
       case 'auto_retry_start': {
+        this.retryFailureMessage = null
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: { type: 'text', text: formatAutoRetryMessage(ev) } satisfies ContentBlock
@@ -789,9 +792,19 @@ export class PiAcpSession {
       }
 
       case 'auto_retry_end': {
+        const success = (ev as { success?: unknown }).success
+        if (success === false) {
+          this.retryFailureMessage = formatAutoRetryFailureMessage(ev)
+        } else {
+          this.retryFailureMessage = null
+        }
+
         this.emit({
           sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: 'Retry finished, resuming.' } satisfies ContentBlock
+          content: {
+            type: 'text',
+            text: this.retryFailureMessage ?? 'Retry finished, resuming.'
+          } satisfies ContentBlock
         })
         break
       }
@@ -840,10 +853,16 @@ export class PiAcpSession {
         // Ensure all updates derived from pi events are delivered before we resolve
         // the ACP `session/prompt` request.
         void this.flushEmits().finally(() => {
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
-          this.pendingTurn?.resolve(reason)
+          if (this.cancelRequested) {
+            this.pendingTurn?.resolve('cancelled')
+          } else if (this.retryFailureMessage) {
+            this.pendingTurn?.reject(RequestError.internalError({}, this.retryFailureMessage))
+          } else {
+            this.pendingTurn?.resolve('end_turn')
+          }
           this.pendingTurn = null
           this.inAgentLoop = false
+          this.retryFailureMessage = null
 
           // Start next queued prompt, if any.
           const next = this.turnQueue.shift()
@@ -1017,6 +1036,14 @@ function formatAutoRetryMessage(ev: PiRpcEvent): string {
   if (delayMs > 0 && delaySeconds === 0) delaySeconds = 1
 
   return `Retrying (attempt ${attempt}/${maxAttempts}, waiting ${delaySeconds}s)...`
+}
+
+function formatAutoRetryFailureMessage(ev: PiRpcEvent): string {
+  const attempt = Number((ev as { attempt?: unknown }).attempt)
+  if (Number.isSafeInteger(attempt) && attempt > 0) {
+    return `Automatic retries exhausted after ${attempt} attempts.`
+  }
+  return 'Automatic retries exhausted.'
 }
 
 function toToolKind(toolName: string): ToolKind {
