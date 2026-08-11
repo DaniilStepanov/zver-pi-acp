@@ -822,12 +822,21 @@ export class PiAcpAgent implements ACPAgent {
 
         const uri = `file://${resultPath}`
 
-        // Emit a short prefix + a resource link. Many clients concatenate chunks into a single
-        // assistant message, so this avoids the "link + duplicate plain text" look.
+        // Emit a short prefix + a resource link. Both carry the same `messageId`
+        // so clients group them into one assistant message instead of showing
+        // "link + duplicate plain text"; grouping by id is what the protocol
+        // specifies, whereas concatenating adjacent chunks is client-specific.
+        //
+        // The id must be unique per invocation, not per session: a second
+        // `/export` reusing the first one's id would be appended to the earlier
+        // export's message by clients that group by id.
+        const exportMessageId = `${session.sessionId}/export-${crypto.randomUUID()}`
+
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
+            messageId: exportMessageId,
             content: {
               type: 'text',
               text: 'Session exported: '
@@ -839,6 +848,7 @@ export class PiAcpAgent implements ACPAgent {
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
+            messageId: exportMessageId,
             content: {
               type: 'resource_link',
               name: `pi-session-${safeSessionId}.html`,
@@ -967,8 +977,13 @@ export class PiAcpAgent implements ACPAgent {
     const data = (await proc.getMessages()) as any
     const messages = Array.isArray(data?.messages) ? data.messages : []
 
-    for (const m of messages) {
+    for (const [index, m] of messages.entries()) {
       const role = String(m?.role ?? '')
+      // Replayed history arrives pre-split into whole messages. Give each one a
+      // distinct `messageId` so clients keep them apart: without ids, a client
+      // that merges adjacent chunks would fuse consecutive turns into one
+      // bubble. Ids are scoped per replay, hence the message index.
+      const historyMessageId = `${session.sessionId}/history-${index}`
 
       if (role === 'user') {
         const text = normalizePiMessageText(m?.content)
@@ -977,6 +992,7 @@ export class PiAcpAgent implements ACPAgent {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'user_message_chunk',
+              messageId: historyMessageId,
               content: { type: 'text', text }
             }
           })
@@ -990,6 +1006,7 @@ export class PiAcpAgent implements ACPAgent {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
+              messageId: historyMessageId,
               content: { type: 'text', text }
             }
           })

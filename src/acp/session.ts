@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
 import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
 import { maybeAuthRequiredError } from './auth-required.js'
+import { MessageIdTracker, contentChunk } from './message-ids.js'
 import { SessionStore } from './session-store.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
@@ -297,6 +298,10 @@ export class PiAcpSession {
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
 
+  // Groups streamed assistant chunks into logical messages for ACP clients.
+  // See `message-ids.ts` for why pi cannot supply the id itself.
+  private readonly messageIds: MessageIdTracker
+
   constructor(opts: {
     sessionId: string
     cwd: string
@@ -311,6 +316,7 @@ export class PiAcpSession {
     this.proc = opts.proc
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
+    this.messageIds = new MessageIdTracker(opts.sessionId)
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
   }
@@ -400,6 +406,19 @@ export class PiAcpSession {
   }
 
   private emit(update: SessionUpdate): void {
+    // An unstamped assistant chunk is an adapter-authored notice (retry,
+    // compaction, queue, ...). It interrupts whatever the model was saying, so
+    // close the open message: model text arriving afterwards must start a new
+    // one instead of being grouped across the notice, which would let clients
+    // reorder it in front of the notice.
+    if (
+      (update.sessionUpdate === 'agent_message_chunk' ||
+        update.sessionUpdate === 'agent_thought_chunk') &&
+      update.messageId == null
+    ) {
+      this.messageIds.end()
+    }
+
     // Serialize update delivery.
     this.lastEmit = this.lastEmit
       .then(() =>
@@ -476,6 +495,9 @@ export class PiAcpSession {
     this.cancelRequested = false
     this.inAgentLoop = false
     this.retryFailureMessage = null
+    // A previous turn may have been cancelled or errored mid-message, leaving an
+    // id open; the new turn's output must not join that message.
+    this.messageIds.end()
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
 
@@ -519,23 +541,34 @@ export class PiAcpSession {
     const type = String((ev as any).type ?? '')
 
     switch (type) {
+      // Message boundaries drive `messageId` grouping. pi opens a fresh message
+      // around tool calls, so this alone separates pre- and post-tool text.
+      case 'message_start': {
+        const role = String((ev as any).message?.role ?? '')
+        if (role === 'assistant') {
+          this.messageIds.begin()
+        }
+        break
+      }
+
+      case 'message_end': {
+        // Any role ending closes the assistant message: pi interleaves tool
+        // result messages between assistant messages.
+        this.messageIds.end()
+        break
+      }
+
       case 'message_update': {
         const ame = (ev as any).assistantMessageEvent
 
         // Stream assistant text.
         if (ame?.type === 'text_delta' && typeof ame.delta === 'string') {
-          this.emit({
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: ame.delta } satisfies ContentBlock
-          })
+          this.emit(contentChunk('agent_message_chunk', ame.delta, this.messageIds.get()))
           break
         }
 
         if (ame?.type === 'thinking_delta' && typeof ame.delta === 'string') {
-          this.emit({
-            sessionUpdate: 'agent_thought_chunk',
-            content: { type: 'text', text: ame.delta } satisfies ContentBlock
-          })
+          this.emit(contentChunk('agent_thought_chunk', ame.delta, this.messageIds.get()))
           break
         }
 
@@ -863,6 +896,9 @@ export class PiAcpSession {
           this.pendingTurn = null
           this.inAgentLoop = false
           this.retryFailureMessage = null
+          // The turn is over: a message left open by an interrupted turn must not
+          // capture anything emitted afterwards.
+          this.messageIds.end()
 
           // Start next queued prompt, if any.
           const next = this.turnQueue.shift()
