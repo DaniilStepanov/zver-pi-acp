@@ -138,6 +138,7 @@ const pkg = readNearestPackageJson(import.meta.url)
 
 export class PiAcpAgent implements ACPAgent {
   private readonly conn: AgentSideConnection
+  private readonly devPackage?: string
   private readonly sessions = new SessionManager()
   private readonly store = new SessionStore()
   private readonly restoringSessions = new Map<string, Promise<PiAcpSession>>()
@@ -149,9 +150,9 @@ export class PiAcpAgent implements ACPAgent {
   // Remember recent session cwd and use it as the default filter.
   private lastSessionCwd: string | null = null
 
-  constructor(conn: AgentSideConnection, _config?: unknown) {
+  constructor(conn: AgentSideConnection, config?: { devPackage?: string }) {
     this.conn = conn
-    void _config
+    this.devPackage = config?.devPackage
   }
 
   private cleanupFailedNewSession(sessionId: string, state?: any | null): void {
@@ -223,7 +224,8 @@ export class PiAcpAgent implements ACPAgent {
         proc = await PiRpcProcess.spawn({
           cwd,
           sessionPath: stored.sessionFile,
-          piCommand: process.env.PI_ACP_PI_COMMAND
+          piCommand: process.env.PI_ACP_PI_COMMAND,
+          ...(this.devPackage ? { devPackage: this.devPackage } : {})
         })
       } catch (e: any) {
         if (e?.name === 'PiRpcSpawnError') {
@@ -307,7 +309,8 @@ export class PiAcpAgent implements ACPAgent {
       mcpServers: params.mcpServers,
       conn: this.conn,
       fileCommands,
-      piCommand: process.env.PI_ACP_PI_COMMAND
+      piCommand: process.env.PI_ACP_PI_COMMAND,
+      devPackage: this.devPackage
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.

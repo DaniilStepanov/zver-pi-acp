@@ -35,6 +35,7 @@ type SessionCreateParams = {
   conn: AgentSideConnection
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   piCommand?: string
+  devPackage?: string
 }
 
 export type StopReason = 'end_turn' | 'cancelled'
@@ -192,7 +193,8 @@ export class SessionManager {
     try {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
-        piCommand: params.piCommand
+        piCommand: params.piCommand,
+        ...(params.devPackage ? { devPackage: params.devPackage } : {})
       })
     } catch (e) {
       if (e instanceof PiRpcSpawnError) {

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import * as readline from 'node:readline'
 import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
+import { devPackageArgs } from '../cli.js'
 
 export class PiRpcSpawnError extends Error {
   /** Underlying spawn error code, e.g. ENOENT, EACCES */
@@ -84,6 +85,8 @@ type SpawnParams = {
   cwd: string
   /** Optional override for `pi` executable name/path */
   piCommand?: string
+  /** If set, disable globally configured extensions and load only this development package. */
+  devPackage?: string
   /** If set, pi will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string
 }
@@ -162,7 +165,7 @@ export class PiRpcProcess {
     // - themes are irrelevant in rpc mode and can be noisy/slow to load.
     // Keep extensions + prompt templates enabled because ACP users may rely on them
     // (e.g. MCP extensions, prompt templates for workflows).
-    const args = ['--mode', 'rpc', '--no-themes']
+    const args = ['--mode', 'rpc', '--no-themes', ...devPackageArgs(params.devPackage)]
     if (params.sessionPath) args.push('--session', params.sessionPath)
 
     const child = spawn(cmd, args, {
