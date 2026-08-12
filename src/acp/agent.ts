@@ -896,25 +896,16 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    let result: StopReason
+    // A failed turn now arrives as a rejection rather than an `error` stop
+    // reason (ACP has no such reason), so the empty `end_turn` of #82 can no
+    // longer happen. A rejection means the session is unhealthy (dead child,
+    // stalled acknowledgement): drop it so a later request restores it from disk.
     try {
-      result = await session.prompt(message, images)
+      return { stopReason: await session.prompt(message, images) }
     } catch (error) {
-      // A rejected turn means the session is unhealthy (dead child, stalled
-      // acknowledgement): drop it so a later request restores it from disk.
       this.sessions.close(session.sessionId)
       throw error
     }
-
-    // ACP StopReason has no "error"; failures must surface as JSON-RPC errors,
-    // not a silent empty end_turn (#82).
-    if (result === 'error') {
-      if (session.wasCancelRequested()) return { stopReason: 'cancelled' }
-      this.sessions.close(session.sessionId)
-      throw RequestError.internalError({}, 'pi prompt failed (the pi process may have exited)')
-    }
-
-    return { stopReason: result }
   }
 
   async cancel(params: CancelNotification): Promise<void> {

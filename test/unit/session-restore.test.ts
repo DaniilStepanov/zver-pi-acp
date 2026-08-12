@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RequestError } from '@agentclientprotocol/sdk'
+
 import { PiAcpAgent } from '../../src/acp/agent.js'
 import { PiRpcProcess } from '../../src/pi-rpc/process.js'
 import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
@@ -197,12 +197,15 @@ test('PiAcpAgent: prompt surfaces a JSON-RPC error when the pi child dies after 
       fileCommands: []
     })
 
+    // The turn must reject rather than resolve to a silent empty `end_turn`.
+    // The concrete error type is not part of the contract: whatever escapes here
+    // is turned into JSON-RPC -32603 by the SDK's request handler, so a raw
+    // transport failure (EPIPE) reaches the client the same way a RequestError does.
     await assert.rejects(
       agent.prompt({
         sessionId: 'stored-session',
         prompt: [{ type: 'text', text: 'still there?' }]
-      } as any),
-      (e: any) => e instanceof RequestError && e.code === -32603
+      } as any)
     )
 
     assert.deepEqual(spawnCalls, [])

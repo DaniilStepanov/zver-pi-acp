@@ -8,6 +8,8 @@ test('PiAcpAgent: closes an unhealthy session and propagates prompt errors', asy
   const closeCalls: string[] = []
   const session = {
     sessionId: 's1',
+    // The session is reused only while its pi child is alive; see restoreSession.
+    proc: { isAlive: () => true },
     async prompt() {
       throw error
     }
